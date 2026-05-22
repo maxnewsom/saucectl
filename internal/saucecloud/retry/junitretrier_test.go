@@ -288,6 +288,94 @@ func TestAppsRetrier_Retry(t *testing.T) {
 			},
 		},
 		{
+			// Integration test: Cucumber-on-Espresso produces JUnit classnames like
+			// "Collect Elements" (display names, not Java classes). These are invalid
+			// for Android's "am instrument -e class" filter and must be skipped.
+			// The original TestOptions["class"] must be preserved.
+			name: "Espresso: VDC skips Cucumber display names and preserves original class filter + SmartRetry",
+			init: init{
+				JobService: &mocks.FakeJobService{
+					GetJobAssetFileContentFn: func(_ context.Context, jobID, fileName string) ([]byte, error) {
+						if jobID == "fake-job-id" && fileName == junit.FileName {
+							return []byte("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<testsuite>\n    <testcase classname=\"Collect Elements\" name=\"Testing scenario 1\" status=\"success\"/>\n    <testcase classname=\"Collect Elements\" name=\"Testing scenario 2\" status=\"error\">\n        <error>assertion failed</error>\n    </testcase>\n</testsuite>\n"), nil
+						}
+						return []byte{}, errors.New("unknown file")
+					},
+				},
+				RetryVDC: true,
+			},
+			args: args{
+				jobOpts: make(chan job.StartOptions),
+				opt: job.StartOptions{
+					Framework:   espresso.Kind,
+					DisplayName: "Dummy Test",
+					SmartRetry: job.SmartRetry{
+						FailedOnly: true,
+					},
+					TestOptions: map[string]interface{}{
+						"class": []string{"com.example.MyTest"},
+					},
+				},
+				previous: job.Job{
+					ID:    "fake-job-id",
+					IsRDC: false,
+				},
+			},
+			expected: job.StartOptions{
+				Framework:   espresso.Kind,
+				DisplayName: "Dummy Test",
+				// Original class filter must be preserved when all classnames are non-Java.
+				TestOptions: map[string]interface{}{
+					"class": []string{"com.example.MyTest"},
+				},
+				SmartRetry: job.SmartRetry{
+					FailedOnly: true,
+				},
+			},
+		},
+		{
+			// Integration test: mixed JUnit with both valid Java classnames and
+			// Cucumber display names. Only valid Java classes should be retried.
+			name: "Espresso: VDC retries only valid Java classes when mixed with Cucumber display names + SmartRetry",
+			init: init{
+				JobService: &mocks.FakeJobService{
+					GetJobAssetFileContentFn: func(_ context.Context, jobID, fileName string) ([]byte, error) {
+						if jobID == "fake-job-id" && fileName == junit.FileName {
+							return []byte("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<testsuite>\n    <testcase classname=\"Collect Elements\" name=\"Testing scenario 1\" status=\"error\">\n        <error>assertion failed</error>\n    </testcase>\n    <testcase classname=\"com.example.RealTest\" name=\"testLogin\" status=\"error\">\n        <error>login failed</error>\n    </testcase>\n</testsuite>\n"), nil
+						}
+						return []byte{}, errors.New("unknown file")
+					},
+				},
+				RetryVDC: true,
+			},
+			args: args{
+				jobOpts: make(chan job.StartOptions),
+				opt: job.StartOptions{
+					Framework:   espresso.Kind,
+					DisplayName: "Dummy Test",
+					SmartRetry: job.SmartRetry{
+						FailedOnly: true,
+					},
+					TestOptions: map[string]interface{}{},
+				},
+				previous: job.Job{
+					ID:    "fake-job-id",
+					IsRDC: false,
+				},
+			},
+			expected: job.StartOptions{
+				Framework:   espresso.Kind,
+				DisplayName: "Dummy Test",
+				// Only the valid Java class is retried; Cucumber display name is skipped.
+				TestOptions: map[string]interface{}{
+					"class": []string{"com.example.RealTest#testLogin"},
+				},
+				SmartRetry: job.SmartRetry{
+					FailedOnly: true,
+				},
+			},
+		},
+		{
 			name: "XCUITest: VDC retries only failed tests when JUnit has failures + SmartRetry",
 			init: init{
 				JobService: &mocks.FakeJobService{
@@ -518,6 +606,44 @@ func Test_normalizeXCUITestClassName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equalf(t, tt.want, conformXCUITestClassName(tt.args.name, tt.args.rdc), "conformXCUITestClassName(%v)", tt.args.name)
+		})
+	}
+}
+
+func Test_isJavaClassName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		// Valid Java classnames
+		{name: "fully qualified class", input: "com.example.MyTest", want: true},
+		{name: "nested class with dollar", input: "com.example.MyTest$Inner", want: true},
+		{name: "two segments", input: "Demo.Class1", want: true},
+		{name: "underscore in package", input: "com.my_app.Test", want: true},
+		{name: "dollar in class", input: "com.example.$Generated", want: true},
+
+		// Cucumber display names
+		{name: "cucumber feature name with spaces", input: "Collect Elements", want: false},
+		{name: "cucumber long scenario name", input: "Testing Collect Elements in different scenarios", want: false},
+
+		// Edge cases - no dot
+		{name: "single word no package", input: "MyTest", want: false},
+		{name: "empty string", input: "", want: false},
+
+		// Edge cases - dot present but not valid Java
+		{name: "cucumber name with dot", input: "Collect.Elements v2", want: false},
+		{name: "version string", input: "Login.v2.0", want: false},
+		{name: "numeric segment", input: "123.456", want: false},
+		{name: "leading dot", input: ".com.example", want: false},
+		{name: "trailing dot", input: "com.example.", want: false},
+		{name: "consecutive dots", input: "com..example", want: false},
+		{name: "special characters", input: "com.example/MyTest", want: false},
+		{name: "hyphen in segment", input: "com.my-app.Test", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isJavaClassName(tt.input))
 		})
 	}
 }

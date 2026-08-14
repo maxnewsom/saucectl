@@ -12,6 +12,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/saucelabs/saucectl/internal/cmd/aiauthoring"
 	"github.com/saucelabs/saucectl/internal/cmd/apit"
 	"github.com/saucelabs/saucectl/internal/cmd/artifacts"
 	"github.com/saucelabs/saucectl/internal/cmd/builds"
@@ -73,6 +74,7 @@ func main() {
 		apit.Command(cmd.PersistentPreRun),
 		builds.Command(cmd.PersistentPreRun),
 		devices.Command(cmd.PersistentPreRun),
+		aiauthoring.Command(cmd.PersistentPreRun),
 	)
 
 	if err := cmd.ExecuteContext(newContext()); err != nil {
